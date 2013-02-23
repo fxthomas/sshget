@@ -1,0 +1,164 @@
+#!/usr/bin/python
+# coding=utf-8
+
+# Base Python File (sshget)
+# Created: Sat Feb 23 13:26:48 2013
+# Version: 1.0
+#
+# This Python script was developped by François-Xavier Thomas.
+# You are free to copy, adapt or modify it.
+# If you do so, however, leave my name somewhere in the credits, I'd appreciate it ;)
+#
+# (ɔ) François-Xavier Thomas <fx.thomas@gmail.com>
+
+# Usage: sshget username@server directory file name contains these words
+
+import paramiko
+import sys
+import re
+import argparse
+import subprocess
+from os.path import dirname, basename
+from progress import ProgressBar
+from time import time
+
+server_re = re.compile(r"((?P<username>.*?)@)?(?P<server>[^:]+)(:(?P<dir>.*))?")
+
+# Arguments
+m = server_re.match(sys.argv[1])
+if m is None:
+    print("Couldn't parse {0}".format(sys.argv[1]))
+    exit()
+m = m.groupdict()
+username = m["username"]
+server = m["server"]
+directory = m["dir"]
+filenameparts = sys.argv[2:]
+
+# Start SSH session
+print ("Connecting to {0}@{1}".format(username, server))
+ssh = paramiko.SSHClient()
+ssh.load_system_host_keys()
+ssh.set_missing_host_key_policy(paramiko.RejectPolicy())
+ssh.connect(server, username=username)
+
+
+def input_numbers(message, nmin, nmax):
+    inp = raw_input("{0} [{1}-{2}] ".format(message, nmin, nmax))
+    inp = inp.split(",")
+    indexes = []
+    for p in inp:
+        try:
+            ip = int(p)
+            if ip >= nmin and ip <= nmax:
+                indexes.append(ip)
+            else:
+                print ("Invalid index: {0}".format(ip))
+
+        except ValueError:
+            pp = p.split("-")
+            if len(pp) == 2:
+                try:
+                    rmin = min(max(int(pp[0]), nmin), nmax)
+                    rmax = min(max(int(pp[1]), nmin), nmax)
+                    for f in range(rmin, rmax + 1):
+                        indexes.append(f)
+                except ValueError:
+                    print ("Invalid input: {0}".format(pp))
+            else:
+                print ("Invalid input: {0}".format(p))
+
+    return indexes
+
+
+def download_rsync(filename):
+    command = ["rsync", "--progress", "--partial"]
+    if username is not None:
+        command.append("{0}@{1}:\"{2}\"".format(username, server, filename))
+    else:
+        command.append("{0}:\"{1}\"".format(server, filename))
+    command.append(".")
+    subprocess.call(command)
+
+
+def download_native(filename, blocksize=65536):
+    sftp = ssh.open_sftp()
+    sftp.chdir(dirname(filename))
+
+    # Open remote file and stat it
+    start = time()
+    remote = sftp.open(basename(filename))
+    size = remote.stat().st_size
+    current_read = 0
+    current_speed = 0
+
+    # Create progress bar
+    progress = ProgressBar("blue", width=60, block="=", empty=" ")
+
+    # Open local file for writing
+    with open(basename(filename), "w") as local:
+        while True:
+            # Render progress
+            progress.render(
+                100 * current_read / size,
+                "{0}, {1}kB/s".format(basename(filename), current_speed / 1024)
+            )
+
+            # Read data from network
+            data = remote.read(blocksize)
+            local.write(data)
+
+            # Update metrics
+            current_read = current_read + len(data)
+            current_speed = current_read / (time() - start)
+
+            # Break if we're at the end
+            if len(data) < blocksize:
+                break
+
+    # Render progress
+    progress.render(
+        100 * current_read / size,
+        "{0}, {1}kB/s".format(basename(filename), current_speed / 1024)
+    )
+
+    # Close connection
+    sftp.close()
+
+
+def find(filenameparts, directory=None):
+    findcommand = ["find", directory or "~", "-not", "-type", "d"]
+    findcommand = findcommand + ["-name '*{0}*'".format(p) for p in filenameparts]
+    findcommand = " ".join(findcommand)
+    print ("Executing: {0}".format(findcommand))
+    _, stdout, _ = ssh.exec_command(findcommand)
+    files = stdout.readlines()
+    files = [f.rstrip("\n") for f in files]
+    return files
+
+# Find files
+files = find(filenameparts, directory)
+download = download_rsync
+
+# Ask the user which one, if necessary
+print ("")
+if len(files) == 0:
+    print ("Found no files matching your request")
+
+elif len(files) == 1:
+    print ("Found: {0}".format(files[0]))
+    i = raw_input("Download? [Y/n] ")
+    if i == '' or i.lower() == 'y':
+        download(files[0])
+
+# Show the files to the user
+else:
+    print ("Found {0} files matching your request:".format(len(files)))
+    for f, i in zip(files, xrange(len(files))):
+        print("  {0}: {1}".format(i + 1, basename(f)))
+    print ("")
+    nim = input_numbers("Which one should I download?", 1, len(files))
+    print ("")
+
+    for ii in nim:
+        download(files[ii - 1])
