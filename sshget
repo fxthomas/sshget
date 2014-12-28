@@ -7,7 +7,8 @@
 #
 # This Python script was developped by François-Xavier Thomas.
 # You are free to copy, adapt or modify it.
-# If you do so, however, leave my name somewhere in the credits, I'd appreciate it ;)
+# If you do so, however, leave my name somewhere in the credits, I'd appreciate
+# it ;)
 #
 # (ɔ) François-Xavier Thomas <fx.thomas@gmail.com>
 
@@ -16,30 +17,44 @@
 import paramiko
 import sys
 import re
-import argparse
+import os
+import shlex
 import subprocess
 from os.path import dirname, basename
-from progress import ProgressBar
 from time import time
+import argparse
 
-server_re = re.compile(r"((?P<username>.*?)@)?(?P<server>[^:]+)(:(?P<dir>.*))?")
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("host", help="Host name (e.g. user@host.com)")
+parser.add_argument("keyword", help="Keywords used to search for a file, using a find(1) command on the remote server. If it exists, the first argument will turn itself and all later keywords into raw find(1) arguments. In all other cases keywords will be converted into `-name '*keyword*'` to look for filename patterns.", nargs="+")  # noqa
+parser.add_argument("--addkeys", help="Auto-add missing SSH keys to the hosts file", action="store_true")  # noqa
+parser.add_argument("--ignore-case", "-i", help="Ignore case for keyword arguments. Uses `-iname` instead of `-name` to look for filename patterns.", action="store_true")  # noqa
+args = parser.parse_args()
+
+if sys.version_info.major == 3:
+    raw_input = input
+
+server_re = re.compile(
+    r"((?P<username>.*?)@)?(?P<server>[^:]+)(:(?P<dir>.*))?")
 
 # Arguments
-m = server_re.match(sys.argv[1])
+m = server_re.match(args.host)
 if m is None:
-    print("Couldn't parse {0}".format(sys.argv[1]))
-    exit()
+    print("Couldn't parse {0}".format(args.host))
+    exit(1)
 m = m.groupdict()
 username = m["username"]
 server = m["server"]
 directory = m["dir"]
-filenameparts = sys.argv[2:]
+filenameparts = args.keyword
 
 # Start SSH session
-print ("Connecting to {0}@{1}".format(username, server))
+print("Connecting to {0}@{1}".format(username, server))
 ssh = paramiko.SSHClient()
 ssh.load_system_host_keys()
-ssh.set_missing_host_key_policy(paramiko.RejectPolicy())
+ssh.load_host_keys(os.path.expanduser("~/.ssh/known_hosts"))
+if args.addkeys:
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 ssh.connect(server, username=username)
 
 
@@ -53,7 +68,7 @@ def input_numbers(message, nmin, nmax):
             if ip >= nmin and ip <= nmax:
                 indexes.append(ip)
             else:
-                print ("Invalid index: {0}".format(ip))
+                print("Invalid index: {0}".format(ip))
 
         except ValueError:
             pp = p.split("-")
@@ -64,9 +79,9 @@ def input_numbers(message, nmin, nmax):
                     for f in range(rmin, rmax + 1):
                         indexes.append(f)
                 except ValueError:
-                    print ("Invalid input: {0}".format(pp))
+                    print("Invalid input: {0}".format(pp))
             else:
-                print ("Invalid input: {0}".format(p))
+                print("Invalid input: {0}".format(p))
 
     return indexes
 
@@ -74,7 +89,8 @@ def input_numbers(message, nmin, nmax):
 def download_rsync(filename):
     command = ["rsync", "--progress", "--partial"]
     if username is not None:
-        command.append("{0}@{1}:\"{2}\"".format(username, server, filename))
+        command.append(
+            "{0}@{1}:\"{2}\"".format(username, server, filename))
     else:
         command.append("{0}:\"{1}\"".format(server, filename))
     command.append(".")
@@ -93,6 +109,7 @@ def download_native(filename, blocksize=65536):
     current_speed = 0
 
     # Create progress bar
+    from progress import ProgressBar
     progress = ProgressBar("blue", width=60, block="=", empty=" ")
 
     # Open local file for writing
@@ -126,39 +143,47 @@ def download_native(filename, blocksize=65536):
     sftp.close()
 
 
-def find(filenameparts, directory=None):
-    findcommand = ["find", directory or "~", "-not", "-type", "d"]
-    findcommand = findcommand + ["-name '*{0}*'".format(p) for p in filenameparts]
-    findcommand = " ".join(findcommand)
-    print ("Executing: {0}".format(findcommand))
+def find(filenameparts, directory=None, ignore_case=False):
+    findcommand = ["find", directory or ".", "-not", "-type", "d"]
+    has_extra = False
+    for p in filenameparts:
+        if p.startswith("-"):
+            has_extra = True
+        if has_extra:
+            findcommand.append(p)
+        else:
+            findcommand.append("-iname" if ignore_case else "-name")
+            findcommand.append("*%s*" % p.strip())
+    findcommand = ' '.join(map(shlex.quote, findcommand))
+    print("Executing: {0}".format(findcommand))
     _, stdout, _ = ssh.exec_command(findcommand)
     files = stdout.readlines()
-    files = [f.rstrip("\n") for f in files]
+    files = sorted([f.rstrip("\n") for f in files])
     return files
 
 # Find files
-files = find(filenameparts, directory)
+files = find(filenameparts, directory=directory, ignore_case=args.ignore_case)
 download = download_rsync
 
 # Ask the user which one, if necessary
-print ("")
+print("")
 if len(files) == 0:
-    print ("Found no files matching your request")
+    print("Found no files matching your request")
 
 elif len(files) == 1:
-    print ("Found: {0}".format(files[0]))
+    print("Found: {0}".format(files[0]))
     i = raw_input("Download? [Y/n] ")
     if i == '' or i.lower() == 'y':
         download(files[0])
 
 # Show the files to the user
 else:
-    print ("Found {0} files matching your request:".format(len(files)))
-    for f, i in zip(files, xrange(len(files))):
+    print("Found {0} files matching your request:".format(len(files)))
+    for f, i in zip(files, range(len(files))):
         print("  {0}: {1}".format(i + 1, basename(f)))
-    print ("")
+    print("")
     nim = input_numbers("Which one should I download?", 1, len(files))
-    print ("")
+    print("")
 
     for ii in nim:
         download(files[ii - 1])
