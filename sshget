@@ -102,7 +102,7 @@ def input_numbers(message, nmin, nmax):
 
 
 def download_rsync(filename):
-    command = ["rsync", "--progress", "--partial"]
+    command = ["rsync", "--progress", "--partial", "--inplace"]
     if username is not None:
         command.append(
             "{0}@{1}:\"{2}\"".format(username, server, filename))
