@@ -12,24 +12,40 @@
 #
 # (ɔ) François-Xavier Thomas <fx.thomas@gmail.com>
 
-# Usage: sshget username@server directory file name contains these words
+"""Interactive tool for listing and downloading files on remote SSH servers,
+whose name matches specified keywords and filters."""
 
-import paramiko
-import sys
-import re
-import os
-import shlex
-import subprocess
-from os.path import dirname, basename
-from time import time
 import argparse
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("host", help="Host name (e.g. user@host.com)")
-parser.add_argument("keyword", help="Keywords used to search for a file, using a find(1) command on the remote server. If it exists, the first argument will turn itself and all later keywords into raw find(1) arguments. In all other cases keywords will be converted into `-name '*keyword*'` to look for filename patterns.", nargs="+")  # noqa
-parser.add_argument("--addkeys", help="Auto-add missing SSH keys to the hosts file", action="store_true")  # noqa
-parser.add_argument("--ignore-case", "-i", help="Ignore case for keyword arguments. Uses `-iname` instead of `-name` to look for filename patterns.", action="store_true")  # noqa
+parser.add_argument(
+    "keyword",
+    help="Keywords and filters used to search for a file, using a find(1) "
+    "command on the remote server. Standard arguments will be converted into "
+    "`-name '*keyword*'` in the remotely execute command, and the first "
+    "argument starting with a dash ('-') will turn itself and all "
+    "later keywords into raw find(1) arguments.",
+    nargs="+")
+parser.add_argument(
+    "--addkeys",
+    help="Auto-add missing SSH keys to the hosts file",
+    action="store_true")
+parser.add_argument(
+    "--ignore-case", "-i",
+    help="Ignore case for keyword arguments. Uses `-iname` instead of `-name` "
+    "to look for filename patterns.",
+    action="store_true")
 args = parser.parse_args()
+
+import paramiko
+import sys
+import re
+import shlex
+import subprocess
+from os.path import dirname, basename
+from progress import ProgressBar
+from time import time
 
 if sys.version_info.major == 3:
     raw_input = input
@@ -52,7 +68,6 @@ filenameparts = args.keyword
 print("Connecting to {0}@{1}".format(username, server))
 ssh = paramiko.SSHClient()
 ssh.load_system_host_keys()
-ssh.load_host_keys(os.path.expanduser("~/.ssh/known_hosts"))
 if args.addkeys:
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 ssh.connect(server, username=username)
